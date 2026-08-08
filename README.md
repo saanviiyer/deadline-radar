@@ -1,5 +1,8 @@
 # Deadline Radar
 
+> Tracks ML/neuro/comp-bio conference deadlines and exports them to your calendar.
+
+
 A focused, always-current deadline dashboard for **ML / neuroscience /
 computational-biology** conferences and workshops. It tells you when the next
 abstract and paper deadlines are, color-codes them by urgency, counts down to

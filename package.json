@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "A focused, always-current deadline dashboard for ML / neuroscience / computational-biology conferences and workshops.",
+  "description": "Tracks ML/neuro/comp-bio conference deadlines and exports them to your calendar.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
