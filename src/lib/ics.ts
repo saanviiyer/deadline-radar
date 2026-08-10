@@ -110,7 +110,7 @@ function eventsForDeadline(dl: Deadline): RawEvent[] {
   return events;
 }
 
-function renderEvent(ev: RawEvent, dtstamp: string): string[] {
+function renderEvent(ev: RawEvent, dtstamp: string, reminderDays: number): string[] {
   const lines: string[] = ["BEGIN:VEVENT", `UID:${ev.uid}`, `DTSTAMP:${dtstamp}`];
   const d = parseISO(ev.when);
   if (!d) return [];
@@ -129,10 +129,11 @@ function renderEvent(ev: RawEvent, dtstamp: string): string[] {
   lines.push(`DESCRIPTION:${escapeText(ev.description)}`);
   if (ev.location) lines.push(`LOCATION:${escapeText(ev.location)}`);
   lines.push(`URL:${escapeText(ev.url)}`);
-  // Reminder 7 days before
+  // Reminder N days before (default 7; per-user preference when signed in)
+  const days = Number.isFinite(reminderDays) && reminderDays > 0 ? Math.round(reminderDays) : 7;
   lines.push(
     "BEGIN:VALARM",
-    "TRIGGER:-P7D",
+    `TRIGGER:-P${days}D`,
     "ACTION:DISPLAY",
     `DESCRIPTION:${escapeText(ev.summary)}`,
     "END:VALARM",
@@ -158,17 +159,19 @@ function wrapCalendar(eventLineGroups: string[][]): string {
 }
 
 /** Full .ics text for a single venue (all its dated milestones). */
-export function buildICSForDeadline(dl: Deadline): string {
+export function buildICSForDeadline(dl: Deadline, reminderDays = 7): string {
   const dtstamp = toUTCStamp(new Date());
-  const groups = eventsForDeadline(dl).map((ev) => renderEvent(ev, dtstamp));
+  const groups = eventsForDeadline(dl).map((ev) =>
+    renderEvent(ev, dtstamp, reminderDays),
+  );
   return wrapCalendar(groups);
 }
 
 /** Full .ics text covering many venues (bulk export of a filtered list). */
-export function buildICSForDeadlines(list: Deadline[]): string {
+export function buildICSForDeadlines(list: Deadline[], reminderDays = 7): string {
   const dtstamp = toUTCStamp(new Date());
   const groups = list.flatMap((dl) =>
-    eventsForDeadline(dl).map((ev) => renderEvent(ev, dtstamp)),
+    eventsForDeadline(dl).map((ev) => renderEvent(ev, dtstamp, reminderDays)),
   );
   return wrapCalendar(groups);
 }

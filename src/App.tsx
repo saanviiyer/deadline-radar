@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { deadlines, type Category } from "./data/deadlines";
+import { type Category } from "./data/deadlines";
 import {
   daysUntil,
   nextRelevantDate,
@@ -15,10 +15,11 @@ import {
 import { DeadlineCard } from "./components/DeadlineCard";
 import { CalendarView } from "./components/CalendarView";
 import { Countdown } from "./components/Countdown";
-
-const ALL_CATEGORIES: Category[] = Array.from(
-  new Set(deadlines.flatMap((d) => d.categories)),
-).sort() as Category[];
+import { AuthBar } from "./components/AuthBar";
+import { useAuth } from "./lib/auth";
+import { useDeadlines } from "./lib/deadlinesRepo";
+import { useSavedDeadlines } from "./lib/saved";
+import { useReminderPrefs } from "./lib/reminderPrefs";
 
 type ViewMode = "board" | "calendar";
 
@@ -34,7 +35,19 @@ function matchesSearch(name: string, full: string, q: string): boolean {
 export default function App() {
   const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [view, setView] = useState<ViewMode>("board");
+  const [savedOnly, setSavedOnly] = useState(false);
   const [dark, setDark] = useState(true);
+
+  const auth = useAuth();
+  const { deadlines, loading, source } = useDeadlines();
+  const { isSaved, toggle, saved } = useSavedDeadlines(auth.user);
+  const prefs = useReminderPrefs(auth.user);
+
+  const ALL_CATEGORIES = useMemo<Category[]>(
+    () =>
+      Array.from(new Set(deadlines.flatMap((d) => d.categories))).sort() as Category[],
+    [deadlines],
+  );
 
   // Apply dark class to <html>.
   useEffect(() => {
@@ -49,6 +62,8 @@ export default function App() {
       filters.window === "all" ? null : parseInt(filters.window, 10);
 
     const result = deadlines.filter((dl) => {
+      // Saved-only
+      if (savedOnly && !saved.has(dl.id)) return false;
       // Search
       if (filters.search && !matchesSearch(dl.name, dl.fullName, filters.search)) {
         return false;
@@ -107,7 +122,7 @@ export default function App() {
       });
     }
     return sorted;
-  }, [filters]);
+  }, [filters, deadlines, savedOnly, saved]);
 
   // Upcoming deadlines for the hero countdown strip.
   const upcoming = useMemo(() => {
@@ -123,13 +138,13 @@ export default function App() {
           (daysUntil(a.iso) ?? Infinity) - (daysUntil(b.iso) ?? Infinity),
       )
       .slice(0, 3);
-  }, []);
+  }, [deadlines]);
 
   const handleBulkExport = () => {
     if (filtered.length === 0) return;
     downloadICS(
       `deadline-radar-${filtered.length}-venues.ics`,
-      buildICSForDeadlines(filtered),
+      buildICSForDeadlines(filtered, prefs.reminderDays),
     );
   };
 
@@ -165,6 +180,9 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {/* Auth + personalization (renders only when Supabase is configured) */}
+        <AuthBar auth={auth} prefs={prefs} savedCount={saved.size} />
 
         {/* Hero countdown strip */}
         {upcoming.length > 0 && (
@@ -207,11 +225,12 @@ export default function App() {
             official Call for Papers before relying on a date. Each venue is
             tagged{" "}
             <span className="font-semibold">confirmed / approx. / TBD</span> for
-            trust level. Edit them in{" "}
-            <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">
-              src/data/deadlines.ts
-            </code>
-            .
+            trust level.{" "}
+            {source === "supabase" ? (
+              <>Live data is served from your Supabase <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">deadlines</code> table — keep it fresh there.</>
+            ) : (
+              <>Seed data lives in <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">src/data/deadlines.ts</code>.</>
+            )}
           </p>
         </div>
 
@@ -227,31 +246,51 @@ export default function App() {
           />
         </div>
 
-        {/* View toggle */}
-        <div className="mb-4 flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:w-fit">
-          {(["board", "calendar"] as ViewMode[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`flex-1 rounded-md px-4 py-1.5 text-sm font-medium capitalize transition sm:flex-none ${
-                view === v
-                  ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
-                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
-              }`}
-            >
-              {v === "board" ? "📋 Board" : "🗓 Calendar"}
-            </button>
-          ))}
+        {/* View toggle + saved-only */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1 rounded-lg border border-slate-200 bg-white p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:w-fit">
+            {(["board", "calendar"] as ViewMode[]).map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`flex-1 rounded-md px-4 py-1.5 text-sm font-medium capitalize transition sm:flex-none ${
+                  view === v
+                    ? "bg-slate-900 text-white dark:bg-white dark:text-slate-900"
+                    : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100"
+                }`}
+              >
+                {v === "board" ? "📋 Board" : "🗓 Calendar"}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => setSavedOnly((s) => !s)}
+            aria-pressed={savedOnly}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-medium shadow-sm transition ${
+              savedOnly
+                ? "border-amber-400 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300"
+                : "border-slate-200 bg-white text-slate-500 hover:text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+            }`}
+          >
+            {savedOnly ? "★" : "☆"} Saved only{saved.size > 0 ? ` (${saved.size})` : ""}
+          </button>
         </div>
 
         {/* Content */}
-        {view === "board" ? (
+        {loading ? (
+          <LoadingState />
+        ) : view === "board" ? (
           filtered.length === 0 ? (
-            <EmptyState />
+            <EmptyState savedOnly={savedOnly} />
           ) : (
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {filtered.map((dl) => (
-                <DeadlineCard key={dl.id} dl={dl} />
+                <DeadlineCard
+                  key={dl.id}
+                  dl={dl}
+                  saved={isSaved(dl.id)}
+                  onToggleSave={() => toggle(dl.id)}
+                />
               ))}
             </div>
           )
@@ -262,9 +301,11 @@ export default function App() {
         {/* Footer */}
         <footer className="mt-10 border-t border-slate-200 pt-6 text-center text-xs text-slate-400 dark:border-slate-800">
           <p>
-            Deadline Radar · seed data in{" "}
-            <code>src/data/deadlines.ts</code> · verify all dates against
-            official CFPs.
+            Deadline Radar ·{" "}
+            {source === "supabase"
+              ? "live data from Supabase"
+              : "seed data in src/data/deadlines.ts"}{" "}
+            · verify all dates against official CFPs.
           </p>
         </footer>
       </div>
@@ -272,14 +313,26 @@ export default function App() {
   );
 }
 
-function EmptyState() {
+function LoadingState() {
   return (
     <div className="rounded-xl border border-dashed border-slate-300 bg-white py-16 text-center dark:border-slate-700 dark:bg-slate-900">
       <p className="text-lg font-medium text-slate-600 dark:text-slate-300">
-        No venues match your filters
+        Loading deadlines…
+      </p>
+    </div>
+  );
+}
+
+function EmptyState({ savedOnly }: { savedOnly: boolean }) {
+  return (
+    <div className="rounded-xl border border-dashed border-slate-300 bg-white py-16 text-center dark:border-slate-700 dark:bg-slate-900">
+      <p className="text-lg font-medium text-slate-600 dark:text-slate-300">
+        {savedOnly ? "No saved venues yet" : "No venues match your filters"}
       </p>
       <p className="mt-1 text-sm text-slate-400">
-        Try widening the deadline window or clearing category filters.
+        {savedOnly
+          ? "Tap the ☆ on any venue to save it here."
+          : "Try widening the deadline window or clearing category filters."}
       </p>
     </div>
   );

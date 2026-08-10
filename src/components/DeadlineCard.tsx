@@ -29,7 +29,15 @@ function Row({ label, value, extra }: { label: string; value: string; extra?: st
   );
 }
 
-export function DeadlineCard({ dl }: { dl: Deadline }) {
+export function DeadlineCard({
+  dl,
+  saved,
+  onToggleSave,
+}: {
+  dl: Deadline;
+  saved?: boolean;
+  onToggleSave?: () => void;
+}) {
   const next = nextRelevantDate(dl);
   const nextISO = next ? next.toISOString() : undefined;
   const days = daysUntil(nextISO);
@@ -53,11 +61,28 @@ export function DeadlineCard({ dl }: { dl: Deadline }) {
               {dl.fullName}
             </p>
           </div>
-          <span
-            className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${style.badge}`}
-          >
-            {days === null ? "no date" : relativeLabel(nextISO)}
-          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            {onToggleSave && (
+              <button
+                onClick={onToggleSave}
+                aria-pressed={saved}
+                aria-label={saved ? "Remove from saved" : "Save venue"}
+                title={saved ? "Remove from saved" : "Save venue"}
+                className={`rounded-lg p-1.5 text-lg leading-none transition ${
+                  saved
+                    ? "text-amber-500 hover:text-amber-400"
+                    : "text-slate-300 hover:text-amber-400 dark:text-slate-600"
+                }`}
+              >
+                {saved ? "★" : "☆"}
+              </button>
+            )}
+            <span
+              className={`rounded-full px-2.5 py-1 text-xs font-semibold ${style.badge}`}
+            >
+              {days === null ? "no date" : relativeLabel(nextISO)}
+            </span>
+          </div>
         </div>
 
         <div className="mt-3 flex flex-wrap gap-1.5">

@@ -91,8 +91,89 @@ docker run -p 8080:80 deadline-radar   # then open http://localhost:8080
 - **Any static host / S3 / nginx** — copy the contents of `dist/` to the web
   root.
 
-No backend, no environment variables, no database — all data ships in the
-bundle.
+By default (no environment variables) there is no backend and no database — all
+data ships in the bundle. To turn it into a real multi-user product with
+accounts and a centrally-updatable dataset, see **Make it real** below.
+
+## Make it real / Production setup (Supabase)
+
+The app runs in two modes, decided at runtime by whether two env vars are set:
+
+- **Zero-config (default):** no env vars → deadlines come from the static seed
+  (`src/data/deadlines.ts`) and saved venues live in `localStorage`. No account
+  needed. This is what you get out of the box.
+- **Cloud mode:** set the two `VITE_SUPABASE_*` vars → the app adds email
+  magic-link sign-in, loads the deadline list from a **public Supabase
+  `deadlines` table**, and syncs each user's saved venues and reminder
+  preference to Postgres. If the table is empty or a fetch fails, it
+  automatically falls back to the seed, so the board is never blank.
+
+### 1. Create a Supabase project
+
+Sign up at [supabase.com](https://supabase.com), create a project, and grab
+**Project Settings → API**:
+
+- `Project URL`  → `VITE_SUPABASE_URL`
+- `anon` `public` key → `VITE_SUPABASE_ANON_KEY`
+
+Both are safe to ship in a client bundle; access is controlled by row-level
+security (RLS), not by hiding the anon key.
+
+### 2. Run the migrations (schema + seed)
+
+In the Supabase dashboard **SQL editor**, run the two files in order:
+
+1. `supabase/migrations/0001_init.sql` — creates the `deadlines`,
+   `saved_deadlines`, `reminder_prefs`, and `admins` tables, enables RLS, and
+   installs the policies (public read on `deadlines`; per-user access on the
+   others).
+2. `supabase/migrations/0002_seed_deadlines.sql` — inserts the current dataset
+   so a fresh project is populated. This file is **auto-generated** from
+   `src/data/deadlines.ts`; regenerate it any time with `npm run seed:gen`.
+
+Or, with the [Supabase CLI](https://supabase.com/docs/guides/cli): `supabase db
+push` (both files live under `supabase/migrations/`).
+
+### 3. Set env vars — locally and in Vercel
+
+Copy `.env.example` to `.env.local` and fill in the two values for local dev.
+For production, add the **same two variables** in your host's settings — in
+Vercel: **Project → Settings → Environment Variables** — then redeploy so the
+build picks them up. (Vite inlines `VITE_*` vars at build time, so a rebuild is
+required after changing them.)
+
+### 4. Enable email sign-in
+
+In Supabase **Authentication → Providers**, make sure **Email** is enabled
+(magic link / OTP). Add your production URL under **Authentication → URL
+Configuration → Redirect URLs** so the magic link returns users to your site.
+
+### Keeping deadlines fresh — the actual maintenance job
+
+Once in cloud mode, **the live product data is the `deadlines` table, not the
+code.** Keeping it current is the real ongoing work:
+
+- **Edit dates/venues** by updating rows in the `deadlines` table — via the
+  Supabase **Table editor**, SQL, or the service-role key from a script. Changes
+  appear for all users on their next load; no redeploy needed.
+- **Bulk refresh from the repo:** edit `src/data/deadlines.ts`, run
+  `npm run seed:gen`, and re-run `0002_seed_deadlines.sql`. It's an idempotent
+  `INSERT … ON CONFLICT (id) DO UPDATE`, so it upserts every row in place.
+- **Who may write:** table writes are locked by RLS to the **service role**
+  (which bypasses RLS — use it for scripts/automation) or to users listed in the
+  `admins` table. Make yourself an admin after signing in once:
+
+  ```sql
+  insert into public.admins (user_id) values ('<your-auth-user-uuid>');
+  ```
+
+  Find your UUID under **Authentication → Users**.
+
+> As always: the seed dates are **starting values for the 2026–2027 cycle** and
+> must be verified against each venue's official Call for Papers. The
+> `confidence` flag (`confirmed` / `approximate` / `tbd`) tells you which to
+> double-check. Verifying and updating these is exactly the maintenance job
+> above.
 
 ## Add or edit venues
 
