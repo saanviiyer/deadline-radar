@@ -3,8 +3,8 @@ import { type Category } from "./data/deadlines";
 import {
   daysUntil,
   nextRelevantDate,
+  nextRelevantDeadline,
   parseISO,
-  primaryDeadlineISO,
 } from "./lib/dates";
 import { buildICSForDeadlines, downloadICS } from "./lib/ics";
 import {
@@ -20,11 +20,12 @@ import { useAuth } from "./lib/auth";
 import { useDeadlines } from "./lib/deadlinesRepo";
 import { useSavedDeadlines } from "./lib/saved";
 import { useReminderPrefs } from "./lib/reminderPrefs";
+import { loadUIPrefs, saveUIPrefs } from "./lib/uiPrefs";
 
 type ViewMode = "board" | "calendar";
 
-function matchesSearch(name: string, full: string, q: string): boolean {
-  const hay = `${name} ${full}`.toLowerCase();
+function matchesSearch(dl: { name: string; fullName: string; categories: string[]; location?: string; notes?: string }, q: string): boolean {
+  const hay = `${dl.name} ${dl.fullName} ${dl.categories.join(" ")} ${dl.location || ""} ${dl.notes || ""}`.toLowerCase();
   return q
     .toLowerCase()
     .split(/\s+/)
@@ -33,13 +34,20 @@ function matchesSearch(name: string, full: string, q: string): boolean {
 }
 
 export default function App() {
-  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
-  const [view, setView] = useState<ViewMode>("board");
-  const [savedOnly, setSavedOnly] = useState(false);
-  const [dark, setDark] = useState(true);
+  const initialUI = useMemo(() => loadUIPrefs({
+    filters: DEFAULT_FILTERS,
+    view: "board",
+    dark: typeof matchMedia === "function" ? matchMedia("(prefers-color-scheme: dark)").matches : true,
+    savedOnly: false,
+  }), []);
+  const [filters, setFilters] = useState<FilterState>(initialUI.filters);
+  const [view, setView] = useState<ViewMode>(initialUI.view);
+  const [savedOnly, setSavedOnly] = useState(initialUI.savedOnly);
+  const [dark, setDark] = useState(initialUI.dark);
+  const [clock, setClock] = useState(() => Date.now());
 
   const auth = useAuth();
-  const { deadlines, loading, source } = useDeadlines();
+  const { deadlines, loading, source, error: dataError, lastUpdated } = useDeadlines();
   const { isSaved, toggle, saved } = useSavedDeadlines(auth.user);
   const prefs = useReminderPrefs(auth.user);
 
@@ -56,8 +64,17 @@ export default function App() {
     else root.classList.remove("dark");
   }, [dark]);
 
+  useEffect(() => {
+    saveUIPrefs({ filters, view, dark, savedOnly });
+  }, [filters, view, dark, savedOnly]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const filtered = useMemo(() => {
-    const now = new Date();
+    const now = new Date(clock);
     const windowDays =
       filters.window === "all" ? null : parseInt(filters.window, 10);
 
@@ -65,7 +82,7 @@ export default function App() {
       // Saved-only
       if (savedOnly && !saved.has(dl.id)) return false;
       // Search
-      if (filters.search && !matchesSearch(dl.name, dl.fullName, filters.search)) {
+      if (filters.search && !matchesSearch(dl, filters.search)) {
         return false;
       }
       // Category (OR within selected categories)
@@ -82,7 +99,11 @@ export default function App() {
       // Hide past: a venue is "past" if its next relevant deadline has passed
       // AND its event is over (or unknown).
       if (filters.hidePast) {
-        const eventEnd = parseISO(dl.eventEnd) ?? parseISO(dl.eventStart);
+        const eventEnd = dl.eventEnd
+          ? new Date(`${dl.eventEnd.slice(0, 10)}T23:59:59.999Z`)
+          : dl.eventStart
+          ? new Date(`${dl.eventStart.slice(0, 10)}T23:59:59.999Z`)
+          : null;
         const eventOver = eventEnd ? eventEnd.getTime() < now.getTime() : true;
         const deadlinePassed = nextDays !== null && nextDays < 0;
         if (deadlinePassed && eventOver) return false;
@@ -122,23 +143,23 @@ export default function App() {
       });
     }
     return sorted;
-  }, [filters, deadlines, savedOnly, saved]);
+  }, [filters, deadlines, savedOnly, saved, clock]);
 
   // Upcoming deadlines for the hero countdown strip.
   const upcoming = useMemo(() => {
-    const now = new Date();
+    const now = new Date(clock);
     return deadlines
-      .map((dl) => ({ dl, iso: nextRelevantDate(dl, now)?.toISOString() }))
+      .map((dl) => ({ dl, milestone: nextRelevantDeadline(dl, now) }))
       .filter(
-        (x): x is { dl: (typeof deadlines)[number]; iso: string } =>
-          !!x.iso && (daysUntil(x.iso, now) ?? -1) >= 0,
+        (x): x is { dl: (typeof deadlines)[number]; milestone: NonNullable<typeof x.milestone> } =>
+          !!x.milestone && x.milestone.instant.getTime() >= now.getTime(),
       )
       .sort(
         (a, b) =>
-          (daysUntil(a.iso) ?? Infinity) - (daysUntil(b.iso) ?? Infinity),
+          a.milestone.instant.getTime() - b.milestone.instant.getTime(),
       )
       .slice(0, 3);
-  }, [deadlines]);
+  }, [deadlines, clock]);
 
   const handleBulkExport = () => {
     if (filtered.length === 0) return;
@@ -187,7 +208,7 @@ export default function App() {
         {/* Hero countdown strip */}
         {upcoming.length > 0 && (
           <section className="mb-6 grid gap-3 sm:grid-cols-3">
-            {upcoming.map(({ dl, iso }, i) => (
+            {upcoming.map(({ dl, milestone }, i) => (
               <div
                 key={dl.id}
                 className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"
@@ -205,9 +226,9 @@ export default function App() {
                     {dl.name}
                   </a>
                 </div>
-                <Countdown targetISO={iso} />
+                <Countdown targetISO={milestone.instant.toISOString()} />
                 <p className="mt-2 truncate text-xs text-slate-500 dark:text-slate-400">
-                  {primaryDeadlineISO(dl) === dl.paperDeadline
+                  {milestone.kind === "paper"
                     ? "Paper deadline"
                     : "Abstract deadline"}
                 </p>
@@ -227,12 +248,19 @@ export default function App() {
             <span className="font-semibold">confirmed / approx. / TBD</span> for
             trust level.{" "}
             {source === "supabase" ? (
-              <>Live data is served from your Supabase <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">deadlines</code> table — keep it fresh there.</>
+              <>Live data is served from your Supabase <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">deadlines</code> table — keep it fresh there.{lastUpdated ? ` Last refreshed ${new Date(lastUpdated).toLocaleString()}.` : ""}</>
+            ) : source === "cache" ? (
+              <>You are viewing the last successfully cached cloud dataset{lastUpdated ? ` from ${new Date(lastUpdated).toLocaleString()}` : ""}. Reconnect to refresh it.</>
             ) : (
               <>Seed data lives in <code className="rounded bg-amber-500/20 px-1 py-0.5 text-xs">src/data/deadlines.ts</code>.</>
             )}
           </p>
         </div>
+        {dataError && (
+          <div role="status" className="mb-6 rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-sm text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+            Live refresh unavailable: {dataError}. Showing {source === "cache" ? "your cached data" : "the bundled seed"}.
+          </div>
+        )}
 
         {/* Filters */}
         <div className="mb-4">
@@ -252,6 +280,7 @@ export default function App() {
             {(["board", "calendar"] as ViewMode[]).map((v) => (
               <button
                 key={v}
+                aria-pressed={view === v}
                 onClick={() => setView(v)}
                 className={`flex-1 rounded-md px-4 py-1.5 text-sm font-medium capitalize transition sm:flex-none ${
                   view === v
@@ -290,6 +319,7 @@ export default function App() {
                   dl={dl}
                   saved={isSaved(dl.id)}
                   onToggleSave={() => toggle(dl.id)}
+                  reminderDays={prefs.reminderDays}
                 />
               ))}
             </div>
@@ -304,6 +334,8 @@ export default function App() {
             Deadline Radar ·{" "}
             {source === "supabase"
               ? "live data from Supabase"
+              : source === "cache"
+              ? "cached cloud data"
               : "seed data in src/data/deadlines.ts"}{" "}
             · verify all dates against official CFPs.
           </p>

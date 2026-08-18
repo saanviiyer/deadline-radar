@@ -30,9 +30,9 @@ export function Countdown({ targetISO, compact = false }: Props) {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 1000);
+    const id = setInterval(() => setNow(new Date()), compact ? 60_000 : 1_000);
     return () => clearInterval(id);
-  }, []);
+  }, [compact]);
 
   const target = parseISO(targetISO);
   if (!target) {

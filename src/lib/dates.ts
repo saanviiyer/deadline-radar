@@ -11,6 +11,24 @@ export function parseISO(value?: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Resolve a deadline to its actual closing instant. Date-only submission dates
+ * mean end-of-day, not midnight at the start of that date. AoE is UTC-12, so
+ * 23:59 AoE is 11:59 UTC on the following calendar day.
+ */
+export function deadlineInstant(value?: string, timezone?: string): Date | null {
+  const parsed = parseISO(value);
+  if (!parsed || hasTime(value)) return parsed;
+  const instant = new Date(parsed.getTime());
+  if (timezone?.trim().toLowerCase() === "aoe") {
+    instant.setUTCDate(instant.getUTCDate() + 1);
+    instant.setUTCHours(11, 59, 59, 999);
+  } else {
+    instant.setUTCHours(23, 59, 59, 999);
+  }
+  return instant;
+}
+
 /** True if the string carries a time component (has a "T"). */
 export function hasTime(value?: string): boolean {
   return !!value && value.includes("T");
@@ -18,12 +36,16 @@ export function hasTime(value?: string): boolean {
 
 /**
  * Whole days from now until `value`. Positive = future, negative = past.
- * Rounds toward the deadline so "today" reads as 0.
+ * Floors the remaining duration so fewer than 24 hours reads as 0 days.
  */
-export function daysUntil(value?: string, now: Date = new Date()): number | null {
-  const d = parseISO(value);
+export function daysUntil(
+  value?: string,
+  now: Date = new Date(),
+  timezone?: string,
+): number | null {
+  const d = deadlineInstant(value, timezone);
   if (!d) return null;
-  return Math.ceil((d.getTime() - now.getTime()) / MS_PER_DAY);
+  return Math.floor((d.getTime() - now.getTime()) / MS_PER_DAY);
 }
 
 /** The single most relevant upcoming date for a venue (paper > abstract). */
@@ -38,7 +60,7 @@ export function primaryDeadlineISO(dl: Deadline): string | undefined {
  */
 export function nextRelevantDate(dl: Deadline, now: Date = new Date()): Date | null {
   const candidates = [dl.abstractDeadline, dl.paperDeadline]
-    .map((v) => parseISO(v))
+    .map((v) => deadlineInstant(v, dl.timezone))
     .filter((d): d is Date => d !== null);
   if (candidates.length === 0) {
     // fall back to event start so far-future events still sort sensibly
@@ -50,6 +72,29 @@ export function nextRelevantDate(dl: Deadline, now: Date = new Date()): Date | n
   }
   // all passed — return the latest past deadline
   return candidates.reduce((a, b) => (a.getTime() > b.getTime() ? a : b));
+}
+
+export type DeadlineKind = "abstract" | "paper";
+
+/** The actual next submission milestone, including its kind for accurate labels. */
+export function nextRelevantDeadline(
+  dl: Deadline,
+  now: Date = new Date(),
+): { kind: DeadlineKind; iso: string; instant: Date } | null {
+  const candidates = ([
+    ["abstract", dl.abstractDeadline],
+    ["paper", dl.paperDeadline],
+  ] as const)
+    .filter((entry): entry is readonly [DeadlineKind, string] => Boolean(entry[1]))
+    .map(([kind, iso]) => ({ kind, iso, instant: deadlineInstant(iso, dl.timezone)! }))
+    .filter((entry) => entry.instant !== null);
+  if (candidates.length === 0) return null;
+  const future = candidates.filter((entry) => entry.instant.getTime() >= now.getTime());
+  const pool = future.length ? future : candidates;
+  return pool.reduce((best, entry) => {
+    if (future.length) return entry.instant < best.instant ? entry : best;
+    return entry.instant > best.instant ? entry : best;
+  });
 }
 
 const DATE_FMT: Intl.DateTimeFormatOptions = {
@@ -96,9 +141,21 @@ export function formatEventRange(startISO?: string, endISO?: string): string {
 }
 
 /** Short relative label, e.g. "in 12 days", "today", "3 days ago". */
-export function relativeLabel(value?: string, now: Date = new Date()): string {
-  const days = daysUntil(value, now);
+export function relativeLabel(
+  value?: string,
+  now: Date = new Date(),
+  timezone?: string,
+): string {
+  const days = daysUntil(value, now, timezone);
   if (days === null) return "";
+  if (value && !hasTime(value)) {
+    const stated = parseISO(value);
+    const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const calendarDays = stated ? Math.round((stated.getTime() - today) / MS_PER_DAY) : days;
+    if (calendarDays === 0) return "today";
+    if (calendarDays === 1) return "tomorrow";
+    if (calendarDays === -1) return "yesterday";
+  }
   if (days === 0) return "today";
   if (days === 1) return "tomorrow";
   if (days === -1) return "yesterday";

@@ -33,10 +33,12 @@ export function DeadlineCard({
   dl,
   saved,
   onToggleSave,
+  reminderDays = 7,
 }: {
   dl: Deadline;
   saved?: boolean;
   onToggleSave?: () => void;
+  reminderDays?: number;
 }) {
   const next = nextRelevantDate(dl);
   const nextISO = next ? next.toISOString() : undefined;
@@ -96,14 +98,14 @@ export function DeadlineCard({
             <Row
               label="Abstract"
               value={formatDate(dl.abstractDeadline)}
-              extra={relativeLabel(dl.abstractDeadline)}
+              extra={relativeLabel(dl.abstractDeadline, new Date(), dl.timezone)}
             />
           )}
           {dl.paperDeadline && (
             <Row
               label="Paper"
               value={formatDate(dl.paperDeadline)}
-              extra={relativeLabel(dl.paperDeadline)}
+              extra={relativeLabel(dl.paperDeadline, new Date(), dl.timezone)}
             />
           )}
           {dl.notificationDate && (
@@ -121,14 +123,14 @@ export function DeadlineCard({
             <p className="mb-1.5 text-xs uppercase tracking-wide text-slate-400">
               Next deadline
             </p>
-            <Countdown targetISO={nextISO} />
+            <Countdown targetISO={nextISO} compact />
           </div>
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             onClick={() =>
-              downloadICS(`${dl.id}.ics`, buildICSForDeadline(dl))
+              downloadICS(`${dl.id}.ics`, buildICSForDeadline(dl, reminderDays))
             }
             className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-slate-200"
           >

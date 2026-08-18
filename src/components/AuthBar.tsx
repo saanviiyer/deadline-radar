@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { AuthState } from "../lib/auth";
 import type { ReminderPrefsState } from "../lib/reminderPrefs";
 
-const REMINDER_OPTIONS = [1, 3, 7, 14, 30];
+const REMINDER_OPTIONS = [0, 1, 3, 7, 14, 30];
 
 interface Props {
   auth: AuthState;
@@ -11,8 +11,8 @@ interface Props {
 }
 
 /**
- * Auth + personalization header. Renders nothing when Supabase is not
- * configured (zero-config mode), so the existing UI is unchanged in that case.
+ * Auth + personalization header. Reminder lead time remains configurable in
+ * zero-config mode and is stored locally; cloud mode adds account sync.
  */
 export function AuthBar({ auth, prefs, savedCount }: Props) {
   const [email, setEmail] = useState("");
@@ -20,7 +20,16 @@ export function AuthBar({ auth, prefs, savedCount }: Props) {
   const [message, setMessage] = useState<string>("");
   const [open, setOpen] = useState(false);
 
-  if (!auth.configured || auth.loading) return null;
+  if (auth.loading) return null;
+
+  if (!auth.configured) {
+    return (
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm dark:border-slate-800 dark:bg-slate-900">
+        <span className="text-slate-600 dark:text-slate-300">Local profile · ★ {savedCount} saved</span>
+        <ReminderSelect prefs={prefs} />
+      </div>
+    );
+  }
 
   // ---- Signed in --------------------------------------------------------
   if (auth.user) {
@@ -42,20 +51,7 @@ export function AuthBar({ auth, prefs, savedCount }: Props) {
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
-            Remind
-            <select
-              value={prefs.reminderDays}
-              onChange={(e) => prefs.setReminderDays(parseInt(e.target.value, 10))}
-              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-            >
-              {REMINDER_OPTIONS.map((d) => (
-                <option key={d} value={d}>
-                  {d} day{d === 1 ? "" : "s"} before
-                </option>
-              ))}
-            </select>
-          </label>
+          <ReminderSelect prefs={prefs} />
           <button
             onClick={() => void auth.signOut()}
             className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -135,5 +131,23 @@ export function AuthBar({ auth, prefs, savedCount }: Props) {
         </p>
       )}
     </div>
+  );
+}
+
+function ReminderSelect({ prefs }: { prefs: ReminderPrefsState }) {
+  return (
+    <label className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+      Calendar reminder
+      <select
+        aria-label="Calendar reminder lead time"
+        value={prefs.reminderDays}
+        onChange={(e) => prefs.setReminderDays(parseInt(e.target.value, 10))}
+        className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 outline-none focus:ring-2 focus:ring-sky-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+      >
+        {REMINDER_OPTIONS.map((d) => (
+          <option key={d} value={d}>{d === 0 ? "No reminder" : `${d} day${d === 1 ? "" : "s"} before`}</option>
+        ))}
+      </select>
+    </label>
   );
 }

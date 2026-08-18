@@ -1,5 +1,5 @@
 import type { Deadline } from "../data/deadlines";
-import { hasTime, parseISO } from "./dates";
+import { deadlineInstant, hasTime, parseISO } from "./dates";
 
 // ---------------------------------------------------------------------------
 // Hand-rolled iCalendar (.ics) generation — RFC 5545.
@@ -50,19 +50,24 @@ function addDays(d: Date, n: number): Date {
 }
 
 /**
- * Fold lines longer than 75 octets per RFC 5545 §3.1. We fold on characters
- * (adequate for ASCII content) and prefix continuation lines with a space.
+ * Fold lines longer than 75 UTF-8 octets per RFC 5545 §3.1.
  */
 function foldLine(line: string): string {
-  if (line.length <= 75) return line;
+  const encoder = new TextEncoder();
+  if (encoder.encode(line).length <= 75) return line;
   const parts: string[] = [];
-  let idx = 0;
-  parts.push(line.slice(0, 75));
-  idx = 75;
-  while (idx < line.length) {
-    parts.push(" " + line.slice(idx, idx + 74));
-    idx += 74;
+  let current = "";
+  let max = 75;
+  for (const character of line) {
+    if (current && encoder.encode(current + character).length > max) {
+      parts.push(parts.length ? ` ${current}` : current);
+      current = character;
+      max = 74;
+    } else {
+      current += character;
+    }
   }
+  if (current) parts.push(parts.length ? ` ${current}` : current);
   return parts.join("\r\n");
 }
 
@@ -74,6 +79,9 @@ interface RawEvent {
   location?: string;
   /** ISO string for the date/datetime this event marks. */
   when: string;
+  endWhen?: string;
+  timezone?: string;
+  isDeadline?: boolean;
 }
 
 /** Build the individual calendar events implied by a deadline record. */
@@ -93,6 +101,8 @@ function eventsForDeadline(dl: Deadline): RawEvent[] {
     url,
     location,
     when,
+    timezone: dl.timezone,
+    isDeadline: kind === "abstract" || kind === "paper",
   });
 
   if (dl.abstractDeadline) {
@@ -105,39 +115,45 @@ function eventsForDeadline(dl: Deadline): RawEvent[] {
     events.push(base("notification", dl.notificationDate, "Notifications"));
   }
   if (dl.eventStart) {
-    events.push(base("event", dl.eventStart, "Conference"));
+    events.push({ ...base("event", dl.eventStart, "Conference"), endWhen: dl.eventEnd });
   }
   return events;
 }
 
 function renderEvent(ev: RawEvent, dtstamp: string, reminderDays: number): string[] {
   const lines: string[] = ["BEGIN:VEVENT", `UID:${ev.uid}`, `DTSTAMP:${dtstamp}`];
-  const d = parseISO(ev.when);
+  const deadlineIsTimed = ev.isDeadline && !hasTime(ev.when) && Boolean(ev.timezone);
+  const d = deadlineIsTimed
+    ? deadlineInstant(ev.when, ev.timezone)
+    : parseISO(ev.when);
   if (!d) return [];
 
-  if (hasTime(ev.when)) {
+  if (hasTime(ev.when) || deadlineIsTimed) {
     lines.push(`DTSTART:${toUTCStamp(d)}`);
     // 1-hour block for timed deadlines (zero-length events are invalid)
     const end = new Date(d.getTime() + 60 * 60 * 1000);
     lines.push(`DTEND:${toUTCStamp(end)}`);
   } else {
     lines.push(`DTSTART;VALUE=DATE:${toDateStamp(d)}`);
-    lines.push(`DTEND;VALUE=DATE:${toDateStamp(addDays(d, 1))}`);
+    const end = parseISO(ev.endWhen) ?? d;
+    lines.push(`DTEND;VALUE=DATE:${toDateStamp(addDays(end, 1))}`);
   }
 
   lines.push(`SUMMARY:${escapeText(ev.summary)}`);
   lines.push(`DESCRIPTION:${escapeText(ev.description)}`);
   if (ev.location) lines.push(`LOCATION:${escapeText(ev.location)}`);
   lines.push(`URL:${escapeText(ev.url)}`);
-  // Reminder N days before (default 7; per-user preference when signed in)
-  const days = Number.isFinite(reminderDays) && reminderDays > 0 ? Math.round(reminderDays) : 7;
-  lines.push(
-    "BEGIN:VALARM",
-    `TRIGGER:-P${days}D`,
-    "ACTION:DISPLAY",
-    `DESCRIPTION:${escapeText(ev.summary)}`,
-    "END:VALARM",
-  );
+  // Reminder N days before (0 explicitly disables alarms).
+  const days = Number.isFinite(reminderDays) && reminderDays >= 0 ? Math.round(reminderDays) : 7;
+  if (days > 0) {
+    lines.push(
+      "BEGIN:VALARM",
+      `TRIGGER:-P${days}D`,
+      "ACTION:DISPLAY",
+      `DESCRIPTION:${escapeText(ev.summary)}`,
+      "END:VALARM",
+    );
+  }
   lines.push("END:VEVENT");
   return lines;
 }
@@ -155,7 +171,7 @@ function wrapCalendar(eventLineGroups: string[][]): string {
     lines.push(...group);
   }
   lines.push("END:VCALENDAR");
-  return lines.map(foldLine).join("\r\n");
+  return `${lines.map(foldLine).join("\r\n")}\r\n`;
 }
 
 /** Full .ics text for a single venue (all its dated milestones). */
@@ -186,7 +202,7 @@ export function downloadICS(filename: string, contents: string): void {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 /**
@@ -213,9 +229,11 @@ export function googleCalendarUrl(
   if (!d || !iso) return null;
 
   let dates: string;
-  if (hasTime(iso)) {
-    const end = new Date(d.getTime() + 60 * 60 * 1000);
-    dates = `${toUTCStamp(d)}/${toUTCStamp(end)}`;
+  const deadlineIsTimed = which !== "event" && !hasTime(iso) && Boolean(dl.timezone);
+  if (hasTime(iso) || deadlineIsTimed) {
+    const start = deadlineIsTimed ? deadlineInstant(iso, dl.timezone)! : d;
+    const end = new Date(start.getTime() + 60 * 60 * 1000);
+    dates = `${toUTCStamp(start)}/${toUTCStamp(end)}`;
   } else {
     const endDate = which === "event" ? addDays(parseISO(dl.eventEnd) ?? d, 1) : addDays(d, 1);
     dates = `${toDateStamp(d)}/${toDateStamp(endDate)}`;

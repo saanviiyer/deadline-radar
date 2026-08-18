@@ -3,7 +3,7 @@
 > Tracks ML/neuro/comp-bio conference deadlines and exports them to your calendar.
 
 
-A focused, always-current deadline dashboard for **ML / neuroscience /
+A focused, freshness-visible deadline dashboard for **ML / neuroscience /
 computational-biology** conferences and workshops. It tells you when the next
 abstract and paper deadlines are, color-codes them by urgency, counts down to
 the next ones, and lets you drop any deadline straight into your calendar.
@@ -25,14 +25,22 @@ the next ones, and lets you drop any deadline straight into your calendar.
 - **Countdowns** — a live day/hour/minute/second countdown to the next three
   deadlines, plus a compact countdown on each card.
 - **Add to calendar** — download a well-formed `.ics` (RFC 5545) for any single
-  venue (all its milestones, each with a 7-day reminder), a **bulk `.ics`** for
+  venue (all milestones, with a configurable or disabled reminder), a **bulk `.ics`** for
   the whole filtered list, and a one-click **Add to Google Calendar** link.
 - **Confidence flags** — every venue is tagged `confirmed` / `approx.` / `TBD`
   so you know which dates to double-check.
+- **Correct deadline instants** — date-only deadlines close at end-of-day;
+  `AoE` becomes 23:59 UTC−12 (11:59 UTC the following day). Countdown,
+  filtering, Google Calendar, and `.ics` export share the same conversion.
+- **Reliable offline use** — the installable app caches its current shell and
+  assets. Cloud mode retains the last validated Supabase dataset, clearly
+  labels cached fallback data, and shows its refresh timestamp.
+- **Persistent workspace** — filters, search, board/calendar view, theme,
+  saved-only mode, saved venues, and calendar reminder lead time survive reloads.
 
 ## Run it
 
-Requires Node 18+ (built and tested on Node 20/24).
+Requires Node 20.19+ (built and tested on Node 24).
 
 ```bash
 npm install
@@ -45,6 +53,7 @@ Then open the printed URL (default http://localhost:5173).
 
 ```bash
 npm run build    # type-checks (tsc -b) then builds to dist/
+npm test         # timezone, calendar export, and full seed validation
 npm run preview  # serve the production build locally
 ```
 
@@ -55,7 +64,9 @@ successful build means there are no type errors.
 
 The build is a fully static site in `dist/` — host it anywhere. Deploy configs
 are checked in: `vercel.json`, `netlify.toml`, and a `Dockerfile`, each with an
-SPA fallback so unknown routes serve `index.html`.
+SPA fallback so unknown routes serve `index.html`. All three set a restrictive
+Content Security Policy and anti-framing/content-sniffing headers; the container
+includes an HTTP health check and service workers are never long-cached.
 
 **Vercel** (`vercel.json` included)
 
@@ -105,8 +116,8 @@ The app runs in two modes, decided at runtime by whether two env vars are set:
 - **Cloud mode:** set the two `VITE_SUPABASE_*` vars → the app adds email
   magic-link sign-in, loads the deadline list from a **public Supabase
   `deadlines` table**, and syncs each user's saved venues and reminder
-  preference to Postgres. If the table is empty or a fetch fails, it
-  automatically falls back to the seed, so the board is never blank.
+  preference to Postgres. If a fetch fails, it first uses the last locally
+  cached, validated cloud dataset and then the seed, so the board is never blank.
 
 ### 1. Create a Supabase project
 
@@ -205,10 +216,10 @@ Key fields:
 | `confidence`       | `"confirmed"` \| `"approximate"` \| `"tbd"` — see below.       |
 | `notes`            | Free-text caveats.                                            |
 
-**Dates format:** ISO 8601. Use a date-only string (`"2026-09-19"`) for all-day
-deadlines, or add a time with a `Z` suffix for UTC (`"2026-09-19T23:59:00Z"`).
-Note that "Anywhere on Earth" (AoE) 23:59 is UTC-12 — i.e. the next day at
-11:59 UTC.
+**Dates format:** ISO 8601. A date-only submission deadline (`"2026-09-19"`)
+is resolved to 23:59 in its `timezone`; use an explicit datetime with a `Z`
+suffix when the CFP publishes an exact UTC instant. "Anywhere on Earth" (AoE)
+23:59 is UTC-12 — the next day at 11:59 UTC. Event dates remain all-day ranges.
 
 ## About the dates — please verify
 

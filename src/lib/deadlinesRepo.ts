@@ -41,6 +41,7 @@ interface DeadlineRow {
   timezone: string | null;
   confidence: Confidence;
   notes: string | null;
+  updated_at?: string | null;
 }
 
 function rowToDeadline(r: DeadlineRow): Deadline {
@@ -62,7 +63,7 @@ function rowToDeadline(r: DeadlineRow): Deadline {
   };
 }
 
-export type DeadlineSource = "supabase" | "seed";
+export type DeadlineSource = "supabase" | "cache" | "seed";
 
 export interface DeadlinesState {
   deadlines: Deadline[];
@@ -71,6 +72,77 @@ export interface DeadlinesState {
   source: DeadlineSource;
   /** Non-null if the Supabase fetch failed and we fell back to the seed. */
   error: string | null;
+  /** When the live/cached cloud dataset was last successfully refreshed. */
+  lastUpdated: string | null;
+}
+
+const CACHE_KEY = "deadline-radar:deadlines-cache:v1";
+
+interface DeadlineCache {
+  version: 1;
+  savedAt: string;
+  deadlines: Deadline[];
+}
+
+export function validateDeadlineData(list: Deadline[]): string[] {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  const knownCategories = new Set([
+    "ML", "NeuroAI", "CompBio", "CV", "NLP", "Neuroscience",
+    "MedImaging", "Robotics", "Speech", "DataMining", "Workshop",
+  ]);
+  const validISO = (value: string) => {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return false;
+    return value.includes("T") || parsed.toISOString().slice(0, 10) === value;
+  };
+  for (const dl of list) {
+    const id = typeof dl?.id === "string" ? dl.id : "";
+    if (!id || ids.has(id)) errors.push(`Duplicate or missing id: ${id || "(empty)"}`);
+    ids.add(id);
+    if (typeof dl?.name !== "string" || !dl.name.trim() || typeof dl.fullName !== "string" || !dl.fullName.trim()) errors.push(`${id}: missing name`);
+    if (!Array.isArray(dl?.categories) || dl.categories.some((category) => !knownCategories.has(category))) errors.push(`${id}: invalid categories`);
+    if (!(["confirmed", "approximate", "tbd"] as unknown[]).includes(dl?.confidence)) errors.push(`${id}: invalid confidence`);
+    try {
+      const url = new URL(dl.website);
+      if (url.protocol !== "https:") errors.push(`${id}: website must use HTTPS`);
+    } catch {
+      errors.push(`${id}: invalid website`);
+    }
+    const fields = [
+      ["abstractDeadline", dl.abstractDeadline], ["paperDeadline", dl.paperDeadline],
+      ["notificationDate", dl.notificationDate], ["eventStart", dl.eventStart],
+      ["eventEnd", dl.eventEnd],
+    ] as const;
+    for (const [field, value] of fields) {
+      if (value && !validISO(value)) errors.push(`${id}: invalid ${field}`);
+    }
+    if (dl.eventStart && dl.eventEnd && new Date(dl.eventEnd) < new Date(dl.eventStart)) {
+      errors.push(`${id}: event ends before it starts`);
+    }
+    if (dl.abstractDeadline && dl.paperDeadline && new Date(dl.paperDeadline) < new Date(dl.abstractDeadline)) {
+      errors.push(`${id}: paper deadline precedes abstract deadline`);
+    }
+  }
+  return errors;
+}
+
+function readCache(): DeadlineCache | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CACHE_KEY) || "null") as DeadlineCache | null;
+    if (parsed?.version !== 1 || !Array.isArray(parsed.deadlines) || validateDeadlineData(parsed.deadlines).length) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(deadlines: Deadline[], savedAt: string): void {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ version: 1, savedAt, deadlines } satisfies DeadlineCache));
+  } catch {
+    // Live data still works when storage is unavailable or full.
+  }
 }
 
 /**
@@ -79,38 +151,59 @@ export interface DeadlinesState {
  * the board is never empty.
  */
 export function useDeadlines(): DeadlinesState {
+  const initialCache = supabase ? readCache() : null;
   const [state, setState] = useState<DeadlinesState>({
-    deadlines: supabase ? [] : seedDeadlines,
+    deadlines: initialCache?.deadlines ?? (supabase ? [] : seedDeadlines),
     loading: Boolean(supabase),
-    source: "seed",
+    source: initialCache ? "cache" : "seed",
     error: null,
+    lastUpdated: initialCache?.savedAt ?? null,
   });
 
   useEffect(() => {
     if (!supabase) return;
+    const client = supabase;
     let active = true;
 
-    supabase
-      .from("deadlines")
-      .select("*")
-      .then(({ data, error }) => {
+    const fallBack = (message: string) => {
+      const cached = readCache();
+      setState({
+        deadlines: cached?.deadlines ?? seedDeadlines,
+        loading: false,
+        source: cached ? "cache" : "seed",
+        error: message,
+        lastUpdated: cached?.savedAt ?? null,
+      });
+    };
+
+    void (async () => {
+      try {
+        const { data, error } = await client.from("deadlines").select("*");
         if (!active) return;
-        if (error || !data || data.length === 0) {
-          setState({
-            deadlines: seedDeadlines,
-            loading: false,
-            source: "seed",
-            error: error ? error.message : null,
-          });
+        const mapped = data ? (data as DeadlineRow[]).map(rowToDeadline) : [];
+        const validationErrors = validateDeadlineData(mapped);
+        if (error || mapped.length === 0 || validationErrors.length > 0) {
+          fallBack(error?.message || validationErrors[0] || "The cloud dataset is empty");
           return;
         }
+        const updateTimes = (data as DeadlineRow[])
+          .map((row) => row.updated_at)
+          .filter((value): value is string => Boolean(value))
+          .sort();
+        const refreshedAt = updateTimes[updateTimes.length - 1] || new Date().toISOString();
+        writeCache(mapped, refreshedAt);
         setState({
-          deadlines: (data as DeadlineRow[]).map(rowToDeadline),
+          deadlines: mapped,
           loading: false,
           source: "supabase",
           error: null,
+          lastUpdated: refreshedAt,
         });
-      });
+      } catch (cause: unknown) {
+        if (!active) return;
+        fallBack(cause instanceof Error ? cause.message : "Could not refresh cloud data");
+      }
+    })();
 
     return () => {
       active = false;

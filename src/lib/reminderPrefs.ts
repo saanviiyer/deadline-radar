@@ -20,7 +20,7 @@ export const DEFAULT_REMINDER_DAYS = 7;
 function readLocal(): number {
   const raw = localStorage.getItem(STORAGE_KEY);
   const n = raw ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) ? n : DEFAULT_REMINDER_DAYS;
+  return Number.isFinite(n) && n >= 0 && n <= 365 ? n : DEFAULT_REMINDER_DAYS;
 }
 
 export interface ReminderPrefsState {
@@ -70,17 +70,18 @@ export function useReminderPrefs(user: User | null): ReminderPrefsState {
 
   const setReminderDays = useCallback(
     (days: number) => {
-      setDays(days);
+      const safeDays = Math.min(365, Math.max(0, Math.round(days)));
+      setDays(safeDays);
       if (cloud && user) {
         void supabase!
           .from("reminder_prefs")
           .upsert(
-            { user_id: user.id, reminder_days: days, updated_at: new Date().toISOString() },
+            { user_id: user.id, reminder_days: safeDays, updated_at: new Date().toISOString() },
             { onConflict: "user_id" },
           );
       } else {
         try {
-          localStorage.setItem(STORAGE_KEY, String(days));
+          localStorage.setItem(STORAGE_KEY, String(safeDays));
         } catch {
           /* ignore */
         }

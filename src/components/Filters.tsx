@@ -78,6 +78,7 @@ export function Filters({
           </svg>
           <input
             type="search"
+            aria-label="Search conferences"
             value={filters.search}
             onChange={(e) => onChange({ ...filters, search: e.target.value })}
             placeholder="Search venues (e.g. NeurIPS, MICCAI, CompBio)…"
@@ -86,6 +87,7 @@ export function Filters({
         </div>
 
         <select
+          aria-label="Deadline window"
           value={filters.window}
           onChange={(e) =>
             onChange({ ...filters, window: e.target.value as WindowKey })
@@ -100,6 +102,7 @@ export function Filters({
         </select>
 
         <select
+          aria-label="Sort deadlines"
           value={filters.sort}
           onChange={(e) =>
             onChange({ ...filters, sort: e.target.value as SortKey })
@@ -120,6 +123,8 @@ export function Filters({
           return (
             <button
               key={c}
+              aria-pressed={active}
+              aria-label={`${active ? "Remove" : "Add"} ${c} category filter`}
               onClick={() => toggleCategory(c)}
               className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${
                 active
